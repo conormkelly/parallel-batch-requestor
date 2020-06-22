@@ -1,57 +1,88 @@
+//* Contains main business logic for batch size determination and processing.
+
 const asyncService = require('./async-service');
 const httpService = require('./http-service');
 
-// Holds state for the batch processor
-let RESPONSE_TIME = { CURRENT_MAX: 0, TARGET: 10000, CUTOFF: 15000 };
-let BATCH_SIZE = { CURRENT: 1, STEP: 1 };
+// Config
+const RESPONSE_TIME_CONSTRAINTS = { TARGET: 12000, CUTOFF: 15000 };
+const MAX_PARALLEL_REQUESTS = 50;
 
-async function getClients(branchData) {
+// State
+let CURRENT_MAX_RESPONSE_TIME = 0;
+let EFFECTIVE_BATCH_SIZE = 1;
+
+/**
+ * Gets all clients for all employees of all branches.
+ */
+async function getAllClients(allBranches) {
   let clientResults = {};
 
-  for (let branch of branchData) {
-    clientResults[`branch${branch.branchId}`] = await processBranch(branch);
+  for (let branch of allBranches) {
+    clientResults[branch.branchId] = await processBranch(branch);
   }
 
   return clientResults;
 }
 
+/**
+ * Get all clients for all employees of a single branch.
+ */
 async function processBranch(branch) {
-  // Make a temp "queue" of employees
+  // Make a working "queue" of employees
   let emps = [...branch.employees];
-  const totalEmployees = emps.length;
+
+  // Store initial length
+  const totalEmps = emps.length;
 
   let branchResults = [];
 
-  while (emps.length > 0 && emps.length >= BATCH_SIZE.CURRENT) {
-    const empBatch = emps.splice(0, BATCH_SIZE.CURRENT);
+  while (emps.length > 0) {
+    // Prepare header
+    const batchHeader = `Branch ${branch.branchId} - starting batch - [${emps.length}/${totalEmps} remaining]`;
+
+    console.log(batchHeader.toUpperCase());
+    console.log('-'.repeat(batchHeader.length));
+
+    console.log('Effective batch size:', EFFECTIVE_BATCH_SIZE);
+
+    // If there are fewer emps left than the effective batch size
+    // just process the remainder of emps with the lower working batch size
+    let workingBatchSize = Math.min(emps.length, EFFECTIVE_BATCH_SIZE);
+    console.log('Working batch size:', workingBatchSize);
+
+    const empBatch = emps.splice(0, workingBatchSize);
     const batchResults = await processEmployeeBatch(empBatch);
 
     for (let batchRes of batchResults) {
       branchResults.push(batchRes);
     }
-    console.log(
-      `${emps.length}/${totalEmployees} remaining for branch${branch.branchId}...\n`
-    );
   }
 
   return branchResults;
 }
 
+/**
+ * Get all clients for this batch of employees.
+ */
 async function processEmployeeBatch(employees) {
   const batchResponses = await asyncService.executeParallel({
     fn: getEmployeeClients,
     args: employees,
   });
 
-  setCurrentMaxResponseTime(batchResponses);
-  setNextBatchSize();
+  CURRENT_MAX_RESPONSE_TIME = calculateMaxResponseTime(batchResponses);
+  console.log('Max response time (ms):', CURRENT_MAX_RESPONSE_TIME);
+  setNextBatchSize(CURRENT_MAX_RESPONSE_TIME);
 
   return batchResponses;
 }
 
+/**
+ * Get all clients for a single employee.
+*/
 async function getEmployeeClients(employee) {
   const httpResponse = await httpService.get({
-    url: `http://localhost:4001/employees/1/clients`,
+    url: `http://localhost:4001/employees/${employee.employeeId}/clients`,
   });
   const clients = httpResponse.data;
   return {
@@ -61,33 +92,38 @@ async function getEmployeeClients(employee) {
   };
 }
 
-function setCurrentMaxResponseTime(batchResults) {
-  const batchTimes = batchResults.map((cr) => cr.duration);
+function calculateMaxResponseTime(batchResults) {
+  const responseTimes = batchResults.map((cr) => cr.duration);
 
-  RESPONSE_TIME.CURRENT_MAX = Math.max(...batchTimes);
-  console.log('RESPONSE_TIME.CURRENT_MAX:', RESPONSE_TIME.CURRENT_MAX);
+  console.log('\nResponse times (ms):', responseTimes, '\n');
+
+  const max = Math.max(...responseTimes);
+  return max;
 }
 
-function setNextBatchSize() {
-  const isBeingUnderUtilized = RESPONSE_TIME.CURRENT_MAX < RESPONSE_TIME.TARGET;
-  const isBeingOverloaded = RESPONSE_TIME.CURRENT_MAX >= RESPONSE_TIME.CUTOFF;
+function setNextBatchSize(lastBatchMaxResponseTime) {
+  const isBeingOverloaded =
+    lastBatchMaxResponseTime >= RESPONSE_TIME_CONSTRAINTS.CUTOFF;
 
-  if (isBeingUnderUtilized) {
-    if (RESPONSE_TIME.CURRENT_MAX * 2 < RESPONSE_TIME.TARGET) {
-      console.log('Batch size: doubling!');
-      BATCH_SIZE.CURRENT *= 2;
-    } else {
-      // Increase by a step
-      console.log(`Batch size: +${BATCH_SIZE.STEP}...`);
-      BATCH_SIZE.CURRENT += BATCH_SIZE.STEP;
-    }
-  } else if (isBeingOverloaded) {
-    // We're overloading the service, so halve the current batch size or reset to 1
-    console.log('Batch size: Overload - halving...');
-    BATCH_SIZE.CURRENT = Math.max(1, Math.floor(BATCH_SIZE.CURRENT / 2));
+  const scalingFactor = isBeingOverloaded
+    ? RESPONSE_TIME_CONSTRAINTS.CUTOFF / 2 / lastBatchMaxResponseTime
+    : RESPONSE_TIME_CONSTRAINTS.TARGET / lastBatchMaxResponseTime;
+
+  console.log('Scaling factor:', scalingFactor);
+
+  if (isBeingOverloaded) {
+    EFFECTIVE_BATCH_SIZE = Math.max(
+      1,
+      Math.floor(EFFECTIVE_BATCH_SIZE * scalingFactor)
+    );
+  } else {
+    EFFECTIVE_BATCH_SIZE = Math.min(
+      MAX_PARALLEL_REQUESTS,
+      Math.floor(EFFECTIVE_BATCH_SIZE * scalingFactor)
+    );
   }
 
-  console.log('Batch size:', BATCH_SIZE.CURRENT);
+  console.log('Next effective batch size:', EFFECTIVE_BATCH_SIZE, '\n');
 }
 
-module.exports = { getClients };
+module.exports = { getClients: getAllClients };
