@@ -5,7 +5,7 @@ const batchService = require('./services/batch-service');
 
 async function main() {
   const BRANCH_COUNT = 2;
-  const EMPLOYEE_COUNT = 10;
+  const EMPLOYEE_COUNT = 50;
 
   // Generate test data
   const allBranches = branchService.generateBranchData({
@@ -22,8 +22,8 @@ async function main() {
   // Log the end time
   const endTimeMs = new Date().getTime();
 
-  console.log('\n********\nRESULTS:\n********');
-  console.log(JSON.stringify(results, null, 2));
+  // console.log('\n********\nRESULTS:\n********');
+  // console.log(JSON.stringify(results, null, 2));
 
   showStatistics({
     startTimeMs,
@@ -31,7 +31,6 @@ async function main() {
     branchCount: BRANCH_COUNT,
     employeeCount: EMPLOYEE_COUNT,
   });
-
 }
 
 /**
@@ -45,14 +44,24 @@ function showStatistics({
 }) {
   const durationTimeMs = endTimeMs - startTimeMs;
 
-  console.log(
-    `Finished after ${durationTimeMs}ms - ${JSON.stringify({
-      branches: branchCount,
-      employees: employeeCount,
-    })} - Mean response time: ${Math.ceil(
-      durationTimeMs / (branchCount * employeeCount)
-    )}ms per employee`
+  const avgTimePerEmp = Math.ceil(
+    durationTimeMs / (branchCount * employeeCount)
   );
+
+  const reportText = `Finished after ${durationTimeMs}ms - ${JSON.stringify({
+    branches: branchCount,
+    employees: employeeCount,
+  })} - Mean response time: ${avgTimePerEmp}ms per employee`;
+
+  console.log('-'.repeat(reportText.length));
+  console.log(reportText);
+
+  console.log(
+    `\nEstimated time for 20k employees: ${
+      (avgTimePerEmp * 20000) / 1000 / 60 / 60
+    } hours`
+  );
+
 }
 
 main();
